@@ -1,0 +1,20 @@
+# docker-compose.yml
+# Ollama runs on the HOST machine — not in this compose file.
+# It needs direct CPU/GPU access, and Docker adds unnecessary
+# overhead and complexity for that. The API container reaches it
+# via host.docker.internal.
+
+services:
+  api:
+    build: .
+    container_name: llm-streaming-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434/api/chat
+      - OLLAMA_MODEL=llama3.2
+    extra_hosts:
+      # host.docker.internal doesn't resolve automatically on Linux
+      # this line makes it work there too. On Mac/Windows it's automatic
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
