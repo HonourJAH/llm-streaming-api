@@ -1,4 +1,3 @@
-# docker-compose.yml
 # Ollama runs on the HOST machine — not in this compose file.
 # It needs direct CPU/GPU access, and Docker adds unnecessary
 # overhead and complexity for that. The API container reaches it

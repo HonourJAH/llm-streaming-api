@@ -41,7 +41,8 @@ async def stream_chat(messages: list[dict]) -> AsyncGenerator[str, None]:
                 token = chunk.get("message", {}).get("content", "")
 
                 if token:
-                    yield token
+                    yield f"data: {token}\n\n"
 
                 if chunk.get("done"):
+                    yield "data: [DONE]\n\n"
                     break

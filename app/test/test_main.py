@@ -182,7 +182,7 @@ class TestStreamChat:
     @pytest.mark.asyncio
     async def test_yields_tokens_from_ollama_response(self):
         """Mock the raw HTTP stream from Ollama and verify stream_chat
-        correctly parses each line and yields the content."""
+        correctly parses each line and yields SSE-formatted content."""
         from app.services.llm import stream_chat
         import json
 
@@ -221,7 +221,13 @@ class TestStreamChat:
             async for token in stream_chat([{"role": "user", "content": "Hi"}]):
                 tokens.append(token)
 
-        assert tokens == ["Hello", " world"]
+        # Each token is yielded as its own SSE-formatted event,
+        # ending with a [DONE] sentinel once Ollama signals completion
+        assert tokens == [
+            "data: Hello\n\n",
+            "data:  world\n\n",
+            "data: [DONE]\n\n",
+        ]
 
     @pytest.mark.asyncio
     async def test_stops_on_done_true(self):

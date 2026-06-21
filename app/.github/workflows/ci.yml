@@ -1,0 +1,152 @@
+name: LLM Streaming API CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  # Job 1: Run Tests
+
+  # All Ollama calls are mocked in test_main.py, so no real Ollama
+  # instance is needed for this job. it's fast and fully isolated.
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pytest-cov
+
+      - name: Run test suite with coverage
+        run: pytest app/test/ -v --cov=app --cov-report=term-missing --tb=short
+
+
+  # Job 2: Build & Verify Docker Image
+
+  # Every push/PR gets a fast build + health check.
+  # The full real-Ollama streaming test only runs on pushes to main,
+  # keeping pull requests fast while still fully validating before merge.
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: llm-streaming-api:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move Docker cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Run container
+        run: |
+          docker run -d \
+            --name llm-streaming-api \
+            --network host \
+            -e OLLAMA_URL=http://localhost:11434/api/chat \
+            -e OLLAMA_MODEL=qwen2.5:0.5b \
+            llm-streaming-api:latest
+
+      - name: Wait for API to be ready
+        run: |
+          for i in {1..30}; do
+            curl -sf http://localhost:8000/health && break
+            echo "Waiting for API... ($i/30)"
+            sleep 2
+          done
+
+      - name: Health check
+        run: curl --fail http://localhost:8000/health
+
+      # Full Ollama integration test — only on main
+      - name: Install Ollama
+        if: github.ref == 'refs/heads/main'
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama
+        if: github.ref == 'refs/heads/main'
+        run: |
+          OLLAMA_HOST=0.0.0.0 nohup ollama serve > ollama.log 2>&1 &
+          for i in {1..30}; do
+            curl -sf http://localhost:11434 && break
+            echo "Waiting for Ollama... ($i/30)"
+            sleep 2
+          done
+
+      - name: Cache Ollama model
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-model-qwen2.5-0.5b
+
+      - name: Pull a small test model
+        if: github.ref == 'refs/heads/main'
+        run: ollama pull qwen2.5:0.5b
+
+      - name: Verify streaming response
+        if: github.ref == 'refs/heads/main'
+        run: |
+          response=$(curl -N --max-time 30 -X POST http://localhost:8000/chat \
+            -H "Content-Type: application/json" \
+            -d '{"messages": [{"role": "user", "content": "Say hello"}]}')
+
+          echo "$response"
+
+          if echo "$response" | grep -q "data: \[DONE\]"; then
+            echo "Streaming completed successfully"
+          else
+            echo "Streaming did not complete as expected"
+            exit 1
+          fi
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker logs llm-streaming-api
+          if [ -f ollama.log ]; then cat ollama.log; fi
+
+      - name: Stop container
+        run: docker stop llm-streaming-api
